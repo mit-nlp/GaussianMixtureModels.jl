@@ -1,7 +1,12 @@
+# GaussianMixtureModels.jl
+#
+# author: Wade Shen
+# swade@ll.mit.edu
+# Copyright © 2009 Massachusetts Institute of Technology, Lincoln Laboratory
 module GaussianMixtureModels
-export Gaussian, GMM, E, M, train, split, logsum, total_ll, ll, DiagGaussian
+export Gaussian, GMM, E, M, train, par_train, split, logsum, total_ll, ll, DiagGaussian, dims, order
 using Stage
-import Base.show
+import Base: show, zero
 
 # -------------------------------------------------------------------------------------------------------------------------
 # Constants
@@ -44,20 +49,34 @@ end
 GMM(dims :: Int, order :: Int) =  GMM([ DiagGaussian(dims) for i = 1:order ], log([ 1.0 / float32(order) for i = 1:order]), zeros(order))
 
 type Acc
-  zero :: Vector{Float32}
-  one  :: Vector{Vector{Float32}}
-  two  :: Vector{Vector{Float32}}
-  N    :: Float32
+  zero           :: Vector{Float32}
+  one            :: Vector{Vector{Float32}}
+  two            :: Vector{Vector{Float32}}
+  N              :: Float32
+  log_likelihood :: Float32
 end
 
-Acc(order :: Int, dims :: Int) = Acc(zeros(order), [ zeros(dims) for i = 1:order ], [ zeros(dims) for i = 1:order ], 0.0)
+Acc(order :: Int, dims :: Int) = Acc(zeros(order), [ zeros(dims) for i = 1:order ], [ zeros(dims) for i = 1:order ], 0.0, 0.0)
 
 # -------------------------------------------------------------------------------------------------------------------------
 # Methods
 # -------------------------------------------------------------------------------------------------------------------------
+zero(a::Acc) = Acc(order(a), dims(a))
+function (+)(a1 :: Acc, a2 :: Acc) 
+  sumone = Array(Vector{Float32}, length(a1.one))
+  sumtwo = Array(Vector{Float32}, length(a1.two))
+  for i = 1:length(a1.one)
+    sumone[i] = a1.one[i] + a2.one[i]
+    sumtwo[i] = a1.two[i] + a2.two[i]
+  end
+
+  return Acc(a1.zero + a2.zero, sumone, sumtwo, a1.N + a2.N, a1.log_likelihood + a2.log_likelihood)
+end
 dims(g :: Gaussian) = length(g.μ)
 dims(gmm :: GMM)    = dims(gmm.mix[1])
+dims(acc :: Acc)    = length(acc.one[1])
 order(gmm :: GMM)   = length(gmm.mix)
+order(acc :: Acc)   = length(acc.zero)
 
 function ll(g :: Gaussian, x :: Vector{Float32})
   xm = x - g.μ
@@ -82,8 +101,7 @@ function total_ll(gmm :: GMM, data) # iterable over data
 end
 
 function E(gmm :: GMM, data)
-  acc             = Acc(order(gmm), dims(gmm))
-  log_likelihood  = 0.0
+  acc = Acc(order(gmm), dims(gmm))
 
   for d in data
     total = ll(gmm, d)
@@ -93,11 +111,11 @@ function E(gmm :: GMM, data)
       acc.one[i]  += post * d
       acc.two[i]  += post * abs2(d) #- gmm.mix[i].μ dot(d - gmm.mix[i].μ, d - gmm.mix[i].μ)
     end
-    acc.N          += 1.0
-    log_likelihood += total
+    acc.N              += 1.0
+    acc.log_likelihood += total
   end
 
-  return log_likelihood, acc
+  return acc
 end
 
 function M(gmm :: GMM, acc :: Acc, floor_w = 1e-4, floor_σ = 1e-3)
@@ -121,12 +139,24 @@ end
 
 function train(gmm :: GMM, data; iterations = 5)
   for i = 1:iterations
-    log_likelihood, acc = E(gmm, data)
-    @info @sprintf("iteration %3d, log likelihood: %10.3f (%7d exemplars, average per exemplar likelihood = %10.5f)", i, log_likelihood, acc.N, log_likelihood / acc.N)
+    acc = E(gmm, data)
+    @info @sprintf("iteration %3d, log likelihood: %10.3f (%7d exemplars, average per exemplar likelihood = %10.5f)", i, acc.log_likelihood, acc.N, acc.log_likelihood / acc.N)
     M(gmm, acc)
   end
 
   return gmm
+end
+
+# assumes that data is a vector of iterables
+function par_train(gmm :: GMM, data :: Vector; iterations = 5)
+  ret = gmm
+  for i = 1:iterations
+    acc = @parallel (+) for sf in data
+      E(ret, sf)
+    end
+    @info @sprintf("iteration %3d, log likelihood: %10.3f (%7d exemplars, average per exemplar likelihood = %10.5f)", i, acc.log_likelihood, acc.N, acc.log_likelihood / acc.N)
+    ret = M(gmm, acc)
+    end
 end
 
 function preturb(g :: DiagGaussian, delta)
