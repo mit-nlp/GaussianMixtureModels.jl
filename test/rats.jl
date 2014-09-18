@@ -215,7 +215,6 @@ Options:
 """
 
 args = docopt(usage, version=v"0.0.1")
-dump(args)
 
 # train
 if args["--train"] != nothing
