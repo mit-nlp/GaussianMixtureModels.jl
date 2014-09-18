@@ -129,7 +129,7 @@ function M(gmm :: GMM, acc :: Acc, floor_w = 1e-4, floor_σ = 1e-3)
         σ[d] = floor_σ
       end
     end
-    gmm.mix[i].σ        = Diagonal(σ)
+    gmm.mix[i].σ        = Diagonal(sqrt(σ))
     gmm.mix[i].logdet_σ = log(det(gmm.mix[i].σ))
     gmm.mix[i].inv_σ    = inv(gmm.mix[i].σ)
   end

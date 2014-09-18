@@ -1,6 +1,9 @@
 @everywhere using GaussianMixtureModels, Stage, Features, Iterators, Clustering, DocOpt
 @everywhere import Base: start, next, done
 
+# -------------------------------------------------------------------------------------------------------------------------
+# Lazy Map
+# -------------------------------------------------------------------------------------------------------------------------
 @everywhere immutable LazyMap{I}
   flt::Function
   itr::I
@@ -19,6 +22,9 @@ end
 
 @everywhere done(m :: LazyMap, s) = done(m.itr, s)
 
+# -------------------------------------------------------------------------------------------------------------------------
+# Utils
+# -------------------------------------------------------------------------------------------------------------------------
 function speech_frames(sf :: SegmentedFile)
   m, n = mask(sf)
   lazy_map(x -> x[2], filter(f -> m[f[1]], enumerate(HTKFeatures(sf.fn))))
@@ -28,16 +34,6 @@ function nonspeech_frames(sf :: SegmentedFile)
   m, n = mask(sf)
   lazy_map(x -> x[2], filter(f -> !m[f[1]], enumerate(HTKFeatures(sf.fn))))
 end
-
-# function par_em(gmm :: GMM, data; iterations = 5)
-#   for i = 1:iterations
-#     acc = @parallel (+) for sf in data
-#       E(gmm, sf)
-#     end
-#     @info @sprintf("iteration %3d, log likelihood: %10.3f (%7d exemplars, average per exemplar likelihood = %10.5f)", i, log_likelihood, acc.N, log_likelihood / acc.N)
-#     M(gmm, acc)
-#     end
-# end
 
 @everywhere function kmeans_init(gmm :: GMM, data; sample_size = 1500)
   mat = Array(Float32, length(gmm.mix[1].μ), 0)
@@ -60,11 +56,24 @@ end
   for i = 1:size(km.centers, 2)
     gmm.logweights[i] = log(km.cweights[i] / totalw)
     gmm.mix[i].μ      = vec(km.centers[:, i])
+    ssum              = zeros(size(km.centers, 1))
+    n                 = 0
+    for d = 1:size(mat, 2)
+      if km.assignments[d] == i
+        ssum += abs2(vec(mat[:, d]))
+        n += 1
+      end
+    end
+    gmm.mix[i].σ        = Diagonal(sqrt((ssum / km.counts[i]) - abs2(gmm.mix[i].μ)))
+    gmm.mix[i].logdet_σ = log(det(gmm.mix[i].σ))
+    gmm.mix[i].inv_σ    = inv(gmm.mix[i].σ)
   end
   return gmm
 end
 
-
+# -------------------------------------------------------------------------------------------------------------------------
+# Training
+# -------------------------------------------------------------------------------------------------------------------------
 function trn(ana, dir; splits = 6, iterations = 5)
   files     = analist(ana, dir = dir)
   speech    = map(speech_frames, files)
@@ -103,6 +112,9 @@ function ktrain(ana, dir; g = 64, iterations = 5)
   return fetch(speech_gmm), fetch(nonspeech_gmm)
 end
 
+# -------------------------------------------------------------------------------------------------------------------------
+# Score and optimize
+# -------------------------------------------------------------------------------------------------------------------------
 function score(files, speech, nonspeech; window_radius = 40)
   scores = Float32[]
   for sf in files
