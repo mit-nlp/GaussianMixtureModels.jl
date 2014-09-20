@@ -71,7 +71,7 @@ end
       end
     end
     gmm.mix[i].σ        = Diagonal(σ)
-    gmm.mix[i].logdet_σ = log(det(gmm.mix[i].σ))
+    gmm.mix[i].logdet_σ = sum(log(σ)) #log(det(gmm.mix[i].σ))
     gmm.mix[i].inv_σ    = inv(gmm.mix[i].σ)
   end
   return gmm
