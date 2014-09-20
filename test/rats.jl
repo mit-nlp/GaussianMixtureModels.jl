@@ -26,16 +26,16 @@ end
 # Utils
 # -------------------------------------------------------------------------------------------------------------------------
 function speech_frames(sf :: SegmentedFile)
-  m, n = mask(sf)
+  m, n = mask(sf, filter = (kind, start, fin, file) -> kind == "S")
   lazy_map(x -> x[2], filter(f -> m[f[1]], enumerate(HTKFeatures(sf.fn))))
 end
 
 function nonspeech_frames(sf :: SegmentedFile)
-  m, n = mask(sf)
-  lazy_map(x -> x[2], filter(f -> !m[f[1]], enumerate(HTKFeatures(sf.fn))))
+  m, n = mask(sf, filter = (kind, start, fin, file) -> kind == "NS" || kind == "NT")
+  lazy_map(x -> x[2], filter(f -> m[f[1]], enumerate(HTKFeatures(sf.fn))))
 end
 
-@everywhere function kmeans_init(gmm :: GMM, data; sample_size = 1500)
+@everywhere function kmeans_init(gmm :: GMM, data; sample_size = 1500, floor_σ = 1e-3)
   mat = Array(Float32, length(gmm.mix[1].μ), 0)
   @timer "kmeans clustering frames" begin
     @info "starting data sampling"
@@ -64,7 +64,13 @@ end
         n += 1
       end
     end
-    gmm.mix[i].σ        = Diagonal(sqrt((ssum / km.counts[i]) - abs2(gmm.mix[i].μ)))
+    σ = (ssum / km.counts[i]) - abs2(gmm.mix[i].μ)
+    for d = 1:size(km.centers, 1)
+      if σ[d] < floor_σ
+        σ[d] = floor_σ
+      end
+    end
+    gmm.mix[i].σ        = Diagonal(σ)
     gmm.mix[i].logdet_σ = log(det(gmm.mix[i].σ))
     gmm.mix[i].inv_σ    = inv(gmm.mix[i].σ)
   end
@@ -75,7 +81,7 @@ end
 # Training
 # -------------------------------------------------------------------------------------------------------------------------
 function trn(ana, dir; splits = 6, iterations = 5)
-  files     = analist(ana, dir = dir)
+  files     = marks(ana, dir = dir)
   speech    = map(speech_frames, files)
   nonspeech = map(nonspeech_frames, files)
   
@@ -95,7 +101,7 @@ function trn(ana, dir; splits = 6, iterations = 5)
 end
 
 function ktrain(ana, dir; g = 64, iterations = 5)
-  files     = analist(ana, dir = dir)
+  files     = marks(ana, dir = dir)
   speech    = map(speech_frames, files)
   nonspeech = map(nonspeech_frames, files)
   
@@ -134,21 +140,27 @@ function score(files, speech, nonspeech; window_radius = 40)
 end
 
 function test(ana, dir, speech, nonspeech; threshold = 0.0)
-  files  = analist(ana, dir = dir)
+  files  = marks(ana, dir = dir)
   scores = score(files, speech, nonspeech)
   N      = 0
   FAs    = 0
   misses = 0
+  K      = 0
   for sf in files
-    speech_mask, speech_frames = mask(sf)
+    speech_mask, speech_frames = mask(sf, filter = (kind, start, fin, file) -> kind == "S")
+    ns_mask, ns_frames         = mask(sf, filter = (kind, start, fin, file) -> kind == "NS" || kind == "NT")
     for i = 1:length(speech_mask)
-      score = scores[N+1]
-      if (score < threshold) && speech_mask[i]
+      score = scores[K+1]
+      if (score < threshold) && (speech_mask[i] && !ns_mask[i])
         misses += 1
-      elseif (score >= threshold) && !speech_mask[i]
+      elseif (score >= threshold) && (ns_mask[i] && !speech_mask[i])
         FAs += 1
       end
-      N += 1
+      #@debug "$i -- $score :: $FAs $misses $(speech_mask[i] ? 1 : (ns_mask[i] ? 0 : 2)) ++"
+      if speech_mask[i] || ns_mask[i]
+        N += 1
+      end
+      K += 1
     end
   end
 
@@ -156,24 +168,31 @@ function test(ana, dir, speech, nonspeech; threshold = 0.0)
 end
 
 function optimize(ana, dir, speech, nonspeech; c_miss = 1.0, c_fa = 1.0)
-  files  = analist(ana, dir = dir)
+  files  = marks(ana, dir = dir)
   scores = score(files, speech, nonspeech)
-  truth  = Bool[]
+  truth  = Int8[]
 
   N_speech = 0
   N        = 0
+  N_ns     = 0
   for sf in files
-    speech_mask, speech_frames = mask(sf)
+    speech_mask, speech_frames = mask(sf, filter = (kind, start, fin, file) -> kind == "S")
+    ns_mask, ns_frames         = mask(sf, filter = (kind, start, fin, file) -> kind == "NS" || kind == "NT")
     for i = 1:length(speech_mask)
-      push!(truth, speech_mask[i])
       if speech_mask[i]
+        push!(truth, 1)
         N_speech += 1
+        N        += 1
+      elseif ns_mask[i]
+        push!(truth, 0)
+        N_ns += 1
+        N    += 1
+      else
+        push!(truth, 2)
       end
-      N += 1
     end
   end
 
-  N_ns = N - N_speech
   dc   = zeros(length(scores))
   fa   = zeros(length(scores))
   miss = zeros(length(scores))
@@ -186,9 +205,9 @@ function optimize(ana, dir, speech, nonspeech; c_miss = 1.0, c_fa = 1.0)
   for idx in indexes
     scr     = scores[idx]
     speechp = truth[idx]
-    if speechp
+    if speechp == 1
       hits += 1
-    else
+    elseif speechp == 0
       fas += 1
     end
 
@@ -218,15 +237,15 @@ Usage:
 
 Options:
   --audio=dir, -a    Audio Directory relative to current path [default: rats-sample]
-  --test=analist     Analist for testing and threshold optimization
-  --train=analist    Analist with marks for training
+  --test=M           Marks for testing and threshold optimization
+  --train=M          Marks with marks for training
   --kmeans           Do K-Means Initialization instead of binary splitting [default: false]
   --model=s          Name of output model [default: rats-sad.gmm]
   --iterations=i     Number of EM training iterations to perform during GMM training [default: 5]
   --gaussians=g, -g  Number of gaussians to target for final GMM (should be a power of two if binary splitting [default: 2]         
 """
 
-args = docopt(usage, version=v"0.0.1")
+args = docopt(usage, ARGS, version=v"0.0.1")
 
 # train
 if args["--train"] != nothing
