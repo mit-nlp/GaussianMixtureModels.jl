@@ -1,11 +1,11 @@
 # GaussianMixtureModels.jl
 #
-# author: Wade Shen
-# swade@ll.mit.edu
+# author: Wade Shen <swade@ll.mit.edu>
 # Copyright © 2009 Massachusetts Institute of Technology, Lincoln Laboratory
+# Licensed under the MIT license.
 module GaussianMixtureModels
-export Gaussian, GMM, E, M, train, par_train, split, logsum, total_ll, ll, DiagGaussian, dims, order
-using Stage
+export Gaussian, GMM, kmeans_init, E, M, train, par_train, split, logsum, total_ll, ll, DiagGaussian, dims, order
+using Stage, Clustering
 import Base: show, zero
 
 # -------------------------------------------------------------------------------------------------------------------------
@@ -72,15 +72,59 @@ function (+)(a1 :: Acc, a2 :: Acc)
 
   return Acc(a1.zero + a2.zero, sumone, sumtwo, a1.N + a2.N, a1.log_likelihood + a2.log_likelihood)
 end
+
 dims(g :: Gaussian) = length(g.μ)
 dims(gmm :: GMM)    = dims(gmm.mix[1])
 dims(acc :: Acc)    = length(acc.one[1])
+
 order(gmm :: GMM)   = length(gmm.mix)
 order(acc :: Acc)   = length(acc.zero)
 
+function kmeans_init(gmm :: GMM, data; floor_σ = 1e-3)
+  mat = Array(Float32, dims(gmm), 0)
+  @timer "kmeans clustering frames" begin
+    for f in data
+      mat = hcat(mat, f)
+    end
+    km = kmeans(mat, order(gmm))
+  end
+
+  # transfer weights, means, covariances
+  totalw = sum(km.cweights)
+  for i = 1:size(km.centers, 2)
+    gmm.logweights[i] = log(km.cweights[i] / totalw)
+    gmm.mix[i].μ      = vec(km.centers[:, i])
+    ssum              = zeros(size(km.centers, 1))
+    n                 = 0
+    for d = 1:size(mat, 2)
+      if km.assignments[d] == i
+        ssum += abs2(vec(mat[:, d]))
+        n += 1
+      end
+    end
+    σ = (ssum / km.counts[i]) - abs2(gmm.mix[i].μ)
+    for d = 1:size(km.centers, 1)
+      if σ[d] < floor_σ
+        σ[d] = floor_σ
+      end
+    end
+    gmm.mix[i].σ        = Diagonal(σ)
+    gmm.mix[i].logdet_σ = sum(log(σ))
+    gmm.mix[i].inv_σ    = inv(gmm.mix[i].σ)
+  end
+  return gmm
+end
+
 function ll(g :: Gaussian, x :: Vector{Float32})
-  xm = x - g.μ
-  return -0.5 * (dims(g) * Log2π + g.logdet_σ + (xm' * g.inv_σ * xm)[1])
+  tmp = 0.0
+  for d = 1:dims(g)
+    xmd = x[d] - g.μ[d]
+    tmp += xmd * g.inv_σ.diag[d] * xmd
+  end
+  return -0.5 * (dims(g) * Log2π + g.logdet_σ + tmp)
+  # re-enable the vector way once auto devec works
+  #xm = x - g.μ
+  #return -0.5 * (dims(g) * Log2π + g.logdet_σ + (xm' * g.inv_σ * xm)[1])
 end
 
 function ll(gmm :: GMM, x :: Vector{Float32})
@@ -160,7 +204,7 @@ function par_train(gmm :: GMM, data :: Vector; iterations = 5)
 end
 
 function preturb(g :: DiagGaussian, delta)
-  return DiagGaussian(g.μ + (delta * diag(g.σ)), g.σ, g.logdet_σ, g.inv_σ)
+  return DiagGaussian(g.μ + (delta * sqrt(diag(g.σ))), g.σ, g.logdet_σ, g.inv_σ)
 end
 
 function split(gmm :: GMM, delta = 0.2)

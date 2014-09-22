@@ -121,7 +121,7 @@ end
 # -------------------------------------------------------------------------------------------------------------------------
 # Score and optimize
 # -------------------------------------------------------------------------------------------------------------------------
-function score(files, speech, nonspeech; window_radius = 40)
+function score(files, speech, nonspeech; window_radius = 10)
   scores = Float32[]
   for sf in files
     for (i, f) in enumerate(HTKFeatures(sf.fn))
@@ -145,8 +145,10 @@ function test(ana, dir, speech, nonspeech; threshold = 0.0)
   N      = 0
   FAs    = 0
   misses = 0
+  decs   = (String=>Vector{Bool})[]
   for sf in files
     speech_mask, speech_frames = mask(sf)
+    decisions = [ false for i = 1:length(speech_mask) ]
     for i = 1:length(speech_mask)
       score = scores[N+1]
       if (score < threshold) && speech_mask[i]
@@ -154,11 +156,15 @@ function test(ana, dir, speech, nonspeech; threshold = 0.0)
       elseif score >= threshold && !speech_mask[i]
         FAs += 1
       end
+      if score >= threshold
+        decisions[i] = true
+      end
       N += 1
     end
+    decs[sf.fn] = decisions
   end
 
-  return FAs, misses, N, [ x >= threshold for x in scores ]
+  return FAs, misses, N, decs #[ x >= threshold for x in scores ]
 end
 
 function optimize(ana, dir, speech, nonspeech; c_miss = 1.0, c_fa = 1.0)
@@ -232,7 +238,8 @@ Options:
   --kmeans           Do K-Means Initialization instead of binary splitting [default: false]
   --model=s          Name of output model [default: rats-sad.gmm]
   --iterations=i     Number of EM training iterations to perform during GMM training [default: 5]
-  --gaussians=g, -g  Number of gaussians to target for final GMM (should be a power of two if binary splitting [default: 2]         
+  --gaussians=g, -g  Number of gaussians to target for final GMM (should be a power of two if binary splitting [default: 2]
+  --out=O, -o        Write output analist
 """
 
 args = docopt(usage, ARGS, version=v"0.0.1")
@@ -262,4 +269,26 @@ if args["--test"] != nothing
   @info "FA rate   = $(FAs / N_ns) (N = $FAs / $N_ns)"
   @info "Miss rate = $(misses / N_speech) (N = $misses / $N_speech)"
   @info "N         = $N"
+  if args["--out"] != nothing
+    segid = 0
+    outdir = args["--out"]
+    isdir(outdir) || mkdir(outdir)
+    for (k, decs) in decisions
+      base, ext = splitext(basename(k))
+      out = open("$outdir/$base.lab", "w")
+      for i = 1:length(decs)
+        start = decs[i] && (i == 1 || (i > 1 && decs[i - 1] == false))
+        if start
+          j      = i
+          segid += 1
+          while (j < length(decs)) && decs[j]
+            j += 1
+          end
+          @printf(out, "%f %f speech\n", (i / 100.0), (j / 100.0))
+          #@printf(out, "%s-%05d %10d %10d %s\n", basename(k), segid, round(i * 100.0 * 8000.0), round(j * 100.0 * 8000.0), basename(k))
+        end
+      end
+      close(out)
+    end
+  end
 end
