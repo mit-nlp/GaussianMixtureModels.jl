@@ -17,7 +17,7 @@ const Log2π = log(2.0 * π)
 # Utilities
 # -------------------------------------------------------------------------------------------------------------------------
 function logsum(values :: Vector)
-  total = 0.0
+  total = 0.0f0
   maxval = maximum(values)
   for val in values
     total += exp(val - maxval)
@@ -56,7 +56,7 @@ type Acc
   log_likelihood :: Float32
 end
 
-Acc(order :: Int, dims :: Int) = Acc(zeros(order), [ zeros(dims) for i = 1:order ], [ zeros(dims) for i = 1:order ], 0.0, 0.0)
+Acc(order :: Int, dims :: Int) = Acc(zeros(order), [ zeros(dims) for i = 1:order ], [ zeros(dims) for i = 1:order ], 0.0f0, 0.0f0)
 
 # -------------------------------------------------------------------------------------------------------------------------
 # Methods
@@ -81,11 +81,14 @@ order(gmm :: GMM)   = length(gmm.mix)
 order(acc :: Acc)   = length(acc.zero)
 
 function kmeans_init(gmm :: GMM, data; floor_σ = 1e-3)
-  mat = Array(Float32, dims(gmm), 0)
   @timer "kmeans clustering frames" begin
-    for f in data
-      mat = hcat(mat, f)
+    len = count(x -> true, data)
+    mat = Array(Float32, dims(gmm), len)
+    
+    for (i, f) in enumerate(data)
+      mat[:, i] = f #hcat(mat, f)
     end
+    @info "kmeans_init: performing kmeans on $len vectors"
     km = kmeans(mat, order(gmm))
   end
 
@@ -116,7 +119,7 @@ function kmeans_init(gmm :: GMM, data; floor_σ = 1e-3)
 end
 
 function ll(g :: Gaussian, x :: Vector{Float32})
-  tmp = 0.0
+  tmp = 0.0f0
   for d = 1:dims(g)
     xmd = x[d] - g.μ[d]
     tmp += xmd * g.inv_σ.diag[d] * xmd
@@ -136,7 +139,7 @@ function ll(gmm :: GMM, x :: Vector{Float32})
 end
   
 function total_ll(gmm :: GMM, data) # iterable over data
-  total = 0.0
+  total = 0.0f0
   for d in data
     total += ll(gmm, d)
   end
@@ -144,16 +147,31 @@ function total_ll(gmm :: GMM, data) # iterable over data
   return total
 end
 
+function kvadd(t :: Vector{Float32}, k :: Float32, v :: Vector{Float32})
+  for i = 1:length(t)
+    t[i] += k * v[i]
+  end
+end
+
+function abs2!(t :: Vector{Float32}, d :: Vector{Float32})
+  for i = 1:length(t)
+    t[i] = d[i] * d[i]
+  end
+end
+
 function E(gmm :: GMM, data)
   acc = Acc(order(gmm), dims(gmm))
-
+  x2  = zeros(Float32, dims(gmm))
   for d in data
     total = ll(gmm, d)
+    abs2!(x2, d)
     for i = 1:order(gmm)
-      post = exp(gmm.workspace[i] - total)
+      post = float32(exp(gmm.workspace[i] - total))
       acc.zero[i] += post
-      acc.one[i]  += post * d
-      acc.two[i]  += post * abs2(d) #- gmm.mix[i].μ dot(d - gmm.mix[i].μ, d - gmm.mix[i].μ)
+      kvadd(acc.one[i], post, d)
+      kvadd(acc.two[i], post, x2)
+      # acc.one[i]  += post * d
+      # acc.two[i]  += post * x2
     end
     acc.N              += 1.0
     acc.log_likelihood += total
@@ -183,7 +201,10 @@ end
 
 function train(gmm :: GMM, data; iterations = 5)
   for i = 1:iterations
-    acc = E(gmm, data)
+    acc = zero(Acc(order(gmm), dims(gmm)))
+    for sf in data
+      acc += E(gmm, sf)
+    end
     @info @sprintf("iteration %3d, log likelihood: %10.3f (%7d exemplars, average per exemplar likelihood = %10.5f)", i, acc.log_likelihood, acc.N, acc.log_likelihood / acc.N)
     M(gmm, acc)
   end
