@@ -221,14 +221,15 @@ function par_train(gmm :: GMM, data :: Vector; iterations = 5)
     end
     @info @sprintf("iteration %3d, log likelihood: %10.3f (%7d exemplars, average per exemplar likelihood = %10.5f)", i, acc.log_likelihood, acc.N, acc.log_likelihood / acc.N)
     ret = M(gmm, acc)
-    end
+  end
+  return ret
 end
 
 function preturb(g :: DiagGaussian, delta)
   return DiagGaussian(g.μ + (delta * sqrt(diag(g.σ))), g.σ, g.logdet_σ, g.inv_σ)
 end
 
-function split(gmm :: GMM, delta = 0.2)
+function split(gmm :: GMM; delta = 0.2)
   workspace  = zeros(order(gmm) * 2)
   logweights = Array(Float32, order(gmm) * 2)
   mix        = Array(Gaussian, order(gmm) * 2)
