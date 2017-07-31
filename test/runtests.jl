@@ -3,19 +3,19 @@ using Base.Test
 using Stage
 
 # Test components
-@expect logsum([-4.252368,-3.4738824]) == log(sum(exp([-4.252368,-3.4738824])))
+@expect logsum([-4.252368,-3.4738824]) == log(sum(exp.([-4.252368,-3.4738824])))
 @expect logsum([-0.69314718055995, -0.69314718055995]) < 1e-10
 
 # Fit random data
 srand(0)
 dims = 2
-data = [ float32(randn(dims)) for i = 1:1500 ]
+data = [ map(Float32, randn(dims)) for i = 1:1500 ]
 @info "mean: $(mean(data))"
 dv = zeros(dims)
 for d in data
-  dv += abs2(d)
+  dv += abs2.(d)
 end
-@info "diag(cov): $(dv/length(data) - abs2(mean(data)))"
+@info "diag(cov): $(dv/length(data) - abs2.(mean(data)))"
 
 # Python tests
 # using PyCall
@@ -40,9 +40,9 @@ end
 # @debug "\tjl covar = $(gmm.mix[1].σ)"
 
 gmm = GMM(dims, 1)
-train(gmm, data, iterations = 10)
-gmm2 = split(gmm) # 2g
-train(gmm2, data, iterations = 10)
-gmm3 = split(gmm2) # 4g
-train(gmm3, data, iterations = 10)
+train(gmm, [ data ] , iterations = 10)
+gmm2 = GaussianMixtureModels.split(gmm) # 2g
+train(gmm2, [ data ], iterations = 10)
+gmm3 = GaussianMixtureModels.split(gmm2) # 4g
+train(gmm3, [ data ], iterations = 10)
 println(gmm3)
